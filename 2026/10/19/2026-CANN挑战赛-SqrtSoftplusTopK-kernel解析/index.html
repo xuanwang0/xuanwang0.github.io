@@ -1,0 +1,333 @@
+<!DOCTYPE html><html lang="zh-CN" data-theme="light"><head><meta charset="UTF-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1.0,viewport-fit=cover"><title>2026 CANN 挑战赛西北赛区初赛：SqrtSoftplusTopK 的 kernel.asc 实现解析 | 宣王</title><meta name="author" content="宣王"><meta name="copyright" content="宣王"><meta name="format-detection" content="telephone=no"><meta name="theme-color" content="#ffffff"><meta name="description" content="结合源码拆解 CANN SqrtSoftplusTopK 算子的 Host 分发、数值稳定评分、Sort32&#x2F;MrgSort、分组筛选、阈值过滤、FP16 专项优化与 UB 内存管理。">
+<meta property="og:type" content="article">
+<meta property="og:title" content="2026 CANN 挑战赛西北赛区初赛：SqrtSoftplusTopK 的 kernel.asc 实现解析">
+<meta property="og:url" content="https://xuanwang0.github.io/2026/10/19/2026-CANN%E6%8C%91%E6%88%98%E8%B5%9B-SqrtSoftplusTopK-kernel%E8%A7%A3%E6%9E%90/index.html">
+<meta property="og:site_name" content="宣王">
+<meta property="og:description" content="结合源码拆解 CANN SqrtSoftplusTopK 算子的 Host 分发、数值稳定评分、Sort32&#x2F;MrgSort、分组筛选、阈值过滤、FP16 专项优化与 UB 内存管理。">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:image" content="https://xuanwang0.github.io/img/%E5%9D%A4%E5%9D%A4.webp">
+<meta property="article:published_time" content="2026-10-19T14:20:00.000Z">
+<meta property="article:modified_time" content="2026-10-19T14:24:10.150Z">
+<meta property="article:author" content="宣王">
+<meta property="article:tag" content="Ascend C">
+<meta property="article:tag" content="CANN">
+<meta property="article:tag" content="TopK">
+<meta property="article:tag" content="昇腾">
+<meta property="article:tag" content="算子开发">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="https://xuanwang0.github.io/img/%E5%9D%A4%E5%9D%A4.webp"><script type="application/ld+json">{
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "headline": "2026 CANN 挑战赛西北赛区初赛：SqrtSoftplusTopK 的 kernel.asc 实现解析",
+  "url": "https://xuanwang0.github.io/2026/10/19/2026-CANN%E6%8C%91%E6%88%98%E8%B5%9B-SqrtSoftplusTopK-kernel%E8%A7%A3%E6%9E%90/",
+  "image": "https://xuanwang0.github.io/img/%E5%9D%A4%E5%9D%A4.webp",
+  "datePublished": "2026-10-19T14:20:00.000Z",
+  "dateModified": "2026-10-19T14:24:10.150Z",
+  "author": [
+    {
+      "@type": "Person",
+      "name": "宣王",
+      "url": "https://xuanwang0.github.io"
+    }
+  ]
+}</script><link rel="shortcut icon" href="/img/%E5%9D%A4%E5%9D%A4.webp"><link rel="canonical" href="https://xuanwang0.github.io/2026/10/19/2026-CANN%E6%8C%91%E6%88%98%E8%B5%9B-SqrtSoftplusTopK-kernel%E8%A7%A3%E6%9E%90/index.html"><link rel="preconnect" href="//cdn.jsdelivr.net"/><link rel="stylesheet" href="/css/index.css?v=5.6.0"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@7.3.1/css/all.min.css"><script>
+    (() => {
+      
+    const saveToLocal = {
+      set: (key, value, ttl) => {
+        const data = { value }
+
+        if (ttl != null) {
+          data.expiry = Date.now() + ttl * 86400000
+        }
+
+        localStorage.setItem(key, JSON.stringify(data))
+      },
+      get: key => {
+        const itemStr = localStorage.getItem(key)
+        if (!itemStr) return
+
+        try {
+          const data = JSON.parse(itemStr)
+
+          if (data.expiry && Date.now() > data.expiry) {
+            localStorage.removeItem(key)
+            return
+          }
+
+          return data.value
+        } catch {
+          localStorage.removeItem(key)
+        }
+      }
+    }
+
+    const scriptCache = new Map()
+    const cssCache = new Map()
+    window.btf = {
+      saveToLocal,
+      getScript: (url, attr = {}) => {
+        if (scriptCache.has(url)) {
+          return scriptCache.get(url)
+        }
+
+        const promise = new Promise((resolve, reject) => {
+          const script = document.createElement('script')
+
+          script.src = url
+          script.async = true
+
+          for (const key in attr) {
+            script.setAttribute(key, attr[key])
+          }
+
+          script.onload = resolve
+          script.onerror = reject
+
+          document.head.appendChild(script)
+        })
+
+        scriptCache.set(url, promise)
+
+        return promise
+      },
+      getCSS: (url, id) => {
+        if (cssCache.has(url)) {
+          return cssCache.get(url)
+        }
+
+        const promise = new Promise((resolve, reject) => {
+          const link = document.createElement('link')
+
+          link.rel = 'stylesheet'
+          link.href = url
+
+          if (id) {
+            link.id = id
+          }
+
+          link.onload = resolve
+          link.onerror = reject
+
+          document.head.appendChild(link)
+        })
+
+        cssCache.set(url, promise)
+
+        return promise
+      },
+      addGlobalFn: (key, fn, name = false, parent = window) => {
+        if (!false && key.startsWith('pjax')) return
+        const globalFn = parent.globalFn || {}
+        globalFn[key] = globalFn[key] || {}
+        globalFn[key][name || Object.keys(globalFn[key]).length] = fn
+        parent.globalFn = globalFn
+      }
+    }
+  
+      
+      const metaThemeColor = document.querySelector('meta[name="theme-color"]')
+      const activateDarkMode = () => {
+        document.documentElement.dataset.theme = 'dark'
+        if (metaThemeColor !== null) {
+          metaThemeColor.setAttribute('content', '#0d0d0d')
+        }
+      }
+      const activateLightMode = () => {
+        document.documentElement.dataset.theme = 'light'
+        if (metaThemeColor !== null) {
+          metaThemeColor.setAttribute('content', '#ffffff')
+        }
+      }
+
+      btf.activateDarkMode = activateDarkMode
+      btf.activateLightMode = activateLightMode
+
+      const theme = saveToLocal.get('theme')
+    
+          theme === 'dark' ? activateDarkMode() : theme === 'light' ? activateLightMode() : null
+        
+      
+      const asideStatus = saveToLocal.get('aside-status')
+      if (asideStatus !== undefined) {
+        document.documentElement.classList.toggle('hide-aside', asideStatus === 'hide')
+      }
+    
+      
+    const detectApple = () => {
+      if (/iPad|iPhone|iPod|Macintosh/.test(navigator.userAgent)) {
+        document.documentElement.classList.add('apple')
+      }
+    }
+    detectApple()
+  
+    })()
+  </script><script>const GLOBAL_CONFIG = {
+  root: '/',
+  algolia: undefined,
+  localSearch: undefined,
+  translate: undefined,
+  highlight: {"plugin":"highlight.js","highlightCopy":true,"highlightLang":true,"highlightHeightLimit":false,"highlightFullpage":false,"highlightMacStyle":false},
+  copy: {
+    success: '复制成功',
+    error: '复制失败',
+    noSupport: '浏览器不支持'
+  },
+  relativeDate: {
+    homepage: false,
+    post: false
+  },
+  runtime: '',
+  dateSuffix: {
+    just: '刚刚',
+    min: '分钟前',
+    hour: '小时前',
+    day: '天前',
+    month: '个月前'
+  },
+  copyright: undefined,
+  lightbox: 'null',
+  Snackbar: undefined,
+  infinitegrid: {
+    js: 'https://cdn.jsdelivr.net/npm/@egjs/infinitegrid@4.13.0/dist/infinitegrid.min.js',
+    buttonText: '加载更多'
+  },
+  isPhotoFigcaption: false,
+  islazyloadPlugin: false,
+  isAnchor: false,
+  percent: {
+    toc: true,
+    rightside: false,
+  },
+  autoDarkmode: false
+}</script><script id="config-diff">var GLOBAL_CONFIG_SITE = {
+  title: '2026 CANN 挑战赛西北赛区初赛：SqrtSoftplusTopK 的 kernel.asc 实现解析',
+  isHighlightShrink: false,
+  isToc: true,
+  pageType: 'post'
+}</script><meta name="generator" content="Hexo 8.1.2"></head><body><div class="bg-animation" id="web_bg" style="background-image: url(/img/%E5%B0%8F%E6%96%B0.png);"></div><div class="post" id="body-wrap"><header class="post-bg" id="page-header" style="background-image: url(/img/%E5%B0%8F%E6%96%B0.png);"><nav id="nav"><span id="blog-info"><a class="nav-site-title" href="/"><span class="site-name">宣王</span></a><a class="nav-page-title" href="/"><span class="site-name">2026 CANN 挑战赛西北赛区初赛：SqrtSoftplusTopK 的 kernel.asc 实现解析</span><span class="site-name"><i class="fa-solid fa-circle-arrow-left"></i><span>  返回首页</span></span></a></span><div id="menus"></div></nav><div id="post-info"><h1 class="post-title">2026 CANN 挑战赛西北赛区初赛：SqrtSoftplusTopK 的 kernel.asc 实现解析</h1><div id="post-meta"><div class="meta-firstline"><span class="post-meta-date"><i class="far fa-calendar-alt fa-fw post-meta-icon"></i><span class="post-meta-label">发表于</span><time class="post-meta-date-created" datetime="2026-10-19T14:20:00.000Z" title="发表于 2026-10-19 22:20:00">2026-10-19</time><span class="post-meta-separator">|</span><i class="fas fa-history fa-fw post-meta-icon"></i><span class="post-meta-label">更新于</span><time class="post-meta-date-updated" datetime="2026-10-19T14:24:10.150Z" title="更新于 2026-10-19 22:24:10">2026-10-19</time></span><span class="post-meta-categories"><span class="post-meta-separator">|</span><i class="fas fa-inbox fa-fw post-meta-icon"></i><a class="post-meta-categories" href="/categories/%E7%AE%97%E5%AD%90%E5%BC%80%E5%8F%91/">算子开发</a></span></div><div class="meta-secondline"></div></div></div></header><main class="layout" id="content-inner"><div id="post"><article class="container post-content" id="article-container"><h1 id="2026-CANN-挑战赛西北赛区初赛：SqrtSoftplusTopK-的-kernel-asc-实现解析"><a href="#2026-CANN-挑战赛西北赛区初赛：SqrtSoftplusTopK-的-kernel-asc-实现解析" class="headerlink" title="2026 CANN 挑战赛西北赛区初赛：SqrtSoftplusTopK 的 kernel.asc 实现解析"></a>2026 CANN 挑战赛西北赛区初赛：SqrtSoftplusTopK 的 kernel.asc 实现解析</h1><p>本文分析我参加 2026 CANN 挑战赛西北赛区初赛时实现的 <code>SqrtSoftplusTopK</code> 算子，重点放在提交文件 <a target="_blank" rel="noopener" href="https://github.com/xuanwang0/cann-sqrt-softplus-topk/blob/d309b05f97d1b68bebbfc587e6395f43d4ac1992/kernel.asc"><code>kernel.asc</code></a> 的实现思路。仓库还包含题目说明、运行脚本和本地校验程序，可从<a target="_blank" rel="noopener" href="https://github.com/xuanwang0/cann-sqrt-softplus-topk">项目主页</a>查看。</p>
+<p>下面讲解对应仓库提交 <code>d309b05</code>，开发环境为 Ascend 910B3 &#x2F; CANN 9.0.0。赛题说明的评测环境为 A2 910B &#x2F; CANN 9.0.0。本文解释代码结构与算法选择，不代表所有形状在该版本上的实测性能结论。</p>
+<h2 id="1-赛题要求与关键观察"><a href="#1-赛题要求与关键观察" class="headerlink" title="1. 赛题要求与关键观察"></a>1. 赛题要求与关键观察</h2><p>输入是二维路由 logits：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">router_logits: [T, E]</span><br></pre></td></tr></table></figure>
+
+<p>其中 <code>T</code> 是 token 数，<code>E</code> 是专家数。算子需要对每一行计算：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">score[t, e] = sqrt(softplus(router_logits[t, e]))</span><br><span class="line">softplus(x) = log(1 + exp(x))</span><br><span class="line">topk_scores[t] = 该行最大的 k 个 score，按降序排列</span><br></pre></td></tr></table></figure>
+
+<p>只输出选中分数，不输出专家 ID。赛题覆盖 <code>float16</code>、<code>float32</code>，<code>T</code> 为 1 到 131072，<code>E</code> 为 64 到 1024，<code>k</code> 为 1 到 64 且不大于 <code>E</code>。最终输出的 dtype 与输入一致，中间 softplus 和 sqrt 按 FP32 精度计算。</p>
+<p>这里最重要的优化来自单调性。对有限实数，<code>softplus(x)</code> 严格递增，平方根也严格递增，因此：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">x_a &gt; x_b  =&gt;  sqrt(softplus(x_a)) &gt; sqrt(softplus(x_b))</span><br></pre></td></tr></table></figure>
+
+<p>所以可以先对原始 logits 做 top-k，再只对这 <code>k</code> 个值计算 softplus 和 sqrt。若先转换全行再排序，就会为每个 token 的所有专家执行昂贵的 <code>Exp</code>、<code>Ln</code> 和 <code>Sqrt</code>；而先筛选能把评分计算量从 <code>T × E</code> 降到 <code>T × k</code>。</p>
+<p>题目只需要分数、不需要索引，平分时选中了哪个专家也不会改变输出值。因此排序记录中的 label&#x2F;索引字段可以作为辅助信息或填充数据使用，不必维护最终专家编号。</p>
+<h2 id="2-kernel-asc-的整体结构"><a href="#2-kernel-asc-的整体结构" class="headerlink" title="2. kernel.asc 的整体结构"></a>2. kernel.asc 的整体结构</h2><p>文件可分为四层：</p>
+<ol>
+<li><strong>公共设备端辅助函数</strong>：对齐与整除、索引生成、稳定评分函数等。</li>
+<li><strong>若干设备端 kernel class</strong>：小行完整排序、通用完整排序、分组筛选、阈值过滤、FP16 专用选择等。</li>
+<li><strong>设备 kernel 入口</strong>：按 dtype 和内部策略选择对应 class 并执行。</li>
+<li><strong>Host 入口和调度器</strong>：读取 tensor 元数据、计算 core 分配、按 shape&#x2F;dtype 选择一个设备 kernel。</li>
+</ol>
+<p>整体调用路径可以概括为：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">run_kernel</span><br><span class="line">  ├─ 校验输入维度、dtype、T/E/k 范围</span><br><span class="line">  ├─ MakePlan：仅根据元数据和 UB/排序资源条件选策略</span><br><span class="line">  └─ Launch：启动一次对应的设备 kernel</span><br><span class="line">       ├─ 切分行并分块搬入 UB</span><br><span class="line">       ├─ 原 logits 上完成 top-k 候选选择</span><br><span class="line">       ├─ FP32 计算 sqrt(softplus)，再转回输入 dtype</span><br><span class="line">       └─ 写出 [T, k]</span><br></pre></td></tr></table></figure>
+
+<p>Host 端不读取 logits 的实际数值。即使设备端快速筛选无法证明候选范围足够，也在同一次 kernel 调用内部回退到完整排序。</p>
+<h2 id="3-Host-入口：元数据检查和策略分发"><a href="#3-Host-入口：元数据检查和策略分发" class="headerlink" title="3. Host 入口：元数据检查和策略分发"></a>3. Host 入口：元数据检查和策略分发</h2><p>文件末尾的 <code>run_kernel</code> 从 <code>TensorGroupInfo</code> 读取输入 tensor 的维数、shape 和 dtype，并拒绝不符合题目约束的元数据：输入必须是二维，<code>T</code> 在 <code>[1, 131072]</code>，<code>E</code> 在 <code>[64, 1024]</code>，<code>k</code> 在 <code>[1, 64]</code> 且 <code>k ≤ E</code>，dtype 编码对应 FP16 或 FP32。</p>
+<p>随后 <code>MakePlan</code> 决定启动多少个 core。初始 core 数不超过 <code>T</code>；每个 core 获得连续的一段行，行数分配采用商和余数：前 <code>rem</code> 个 core 多处理一行，其余处理 <code>q</code> 行。这使得各行只写自己的 <code>[T, k]</code> 输出区间。</p>
+<p>调度器选择的策略包括：</p>
+<table>
+<thead>
+<tr>
+<th>策略</th>
+<th>主要适用场景</th>
+<th>核心工作</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>SmallRow</code></td>
+<td>每核一行、专家数不超过 128、<code>k ≤ 16</code></td>
+<td>在一个 UB 工作区内排序一行</td>
+</tr>
+<tr>
+<td><code>FewRun</code></td>
+<td>FP32 且专家数不超过 128</td>
+<td>对最多四个 <code>Sort32</code> run 做完整归并；特定边界形状可用有界前缀快速路径</td>
+</tr>
+<tr>
+<td><code>SmallHalfBatch</code></td>
+<td>FP16、129–256 列、<code>k ≤ 16</code> 且每核有合适的小批量</td>
+<td>多行共享一次向量化排序和搬运开销</td>
+</tr>
+<tr>
+<td><code>Group</code></td>
+<td>分组上界足以显著缩小候选集合</td>
+<td>先排序各组最大值，再展开少量入选组</td>
+</tr>
+<tr>
+<td><code>Threshold</code></td>
+<td>估计候选量明显小于整行</td>
+<td>通过阈值压缩候选；无法证明安全时完整排序</td>
+</tr>
+<tr>
+<td><code>General</code></td>
+<td>其余情况</td>
+<td>在行分块内完成精确的完整排序与多级归并</td>
+</tr>
+</tbody></table>
+<p>部分入口还会在设备端细分。例如 FP16 通用入口可选择成对筛选；FP16 阈值入口根据列数决定条带或分块布局。分发条件只依赖 <code>T/E/k/dtype</code>、core 分配与资源预算，不根据输入值在 Host 上做分支。</p>
+<h2 id="4-数值计算：稳定计算-sqrt-softplus-x"><a href="#4-数值计算：稳定计算-sqrt-softplus-x" class="headerlink" title="4. 数值计算：稳定计算 sqrt(softplus(x))"></a>4. 数值计算：稳定计算 sqrt(softplus(x))</h2><p>公共函数 <code>StableSqrtSoftplus</code> 对已经选出的 logits 进行 FP32 计算。直接用 <code>log(1 + exp(x))</code> 会在大正数处让 <code>exp(x)</code> 溢出，在很小的数处也可能因 <code>1 + exp(x)</code> 的舍入而丢失精度。</p>
+<p>实现的大致步骤是：</p>
+<ol>
+<li>先计算 <code>min(x, 20)</code>，再取指数，避免直接对很大的正数求指数。</li>
+<li>计算 <code>log(1 + exp(min(x, 20)))</code>。</li>
+<li>用上下界修正舍入结果，并对很小的指数值做下限修复，避免 <code>log(1 + z)</code> 在 <code>z</code> 很小时因消去误差被算成零。</li>
+<li>对修正后的 softplus 取平方根。</li>
+</ol>
+<p>当 <code>x &gt; 20</code> 时，softplus 可近似为 <code>x</code>；这也是代码在避免 <code>exp</code> 溢出的同时保留大 logits 结果的依据。代码中另有 <code>PositiveSqrtSoftplus</code>，使用等价恒等式：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">softplus(x) = x + log(1 + exp(-x)),  x &gt;= 0</span><br></pre></td></tr></table></figure>
+
+<p>它只在设备端已证明输入为正、且相关快速筛选条件成立时使用；如果数据不满足正值条件，仍走完整稳定计算路径。</p>
+<p>FP16 路径并不在 half 精度上计算 exp&#x2F;log&#x2F;sqrt。它将选中的 half logits 转成 float，调用同一个稳定函数，最后按输入 dtype 转回 half。排序本身可以保留原始输入精度，避免对整行额外做 FP32 转换。</p>
+<h2 id="5-完整排序路径：Sort32-四路归并"><a href="#5-完整排序路径：Sort32-四路归并" class="headerlink" title="5. 完整排序路径：Sort32 + 四路归并"></a>5. 完整排序路径：Sort32 + 四路归并</h2><p>通用精确路径由 <code>KernelRuntimeTopK</code> 实现。它将每行的列数补齐到适合数据搬运和排序的长度，尾部用 <code>-inf</code> 填充。由于填充值不可能大于真实有限 logits，它不会进入有效 top-k；并且在有 <code>-inf</code> 输入时，填充值与真实值相等也不会改变输出分数，因为两者评分相同。</p>
+<p>Ascend C 的 <code>Sort32</code> 将输入拆成 32 元素的有序小段（run）。接下来使用 <code>MrgSort</code> 一次归并最多四个有序 run。多级归并时，每个子问题只保留足够的前缀：如果目标是求全局 top-k，那么任何一个子集合中排名超过 k 的元素，前面已经至少有 k 个元素不小于它，它不可能成为全局 top-k。因此各子树保留至少 k 个候选就足够；实现按 <code>scoreSlots = ceil(k/8) × 8</code> 等对齐长度保留前缀，最后再 gather 恰好 <code>k</code> 个值。</p>
+<p>当某行包含很多个 run 时，代码按树状方式反复进行四路归并和前缀压缩，而不是一次性把整行所有记录放进一个超大排序操作中。FP32 和 FP16 共用主要排序思想，但临时记录布局和对齐方式不同。</p>
+<p>对于较小的 FP32 <code>FewRun</code> 场景，还实现了一个特殊的有界前缀路径 <code>KernelBoundedPrefixRows</code>：它只处理满足明确条件的列数、<code>k</code> 和每核行数。每个 run 先取 16 个前缀，再检查被省略部分的上界是否低于最终 top-k 截止值。只有设备端检查证明所有行都安全时才接受前缀结果；被拒绝的行执行完整四路归并。其余 shape 仍走完整排序。</p>
+<h2 id="6-Group-策略：先选组，再选组内元素"><a href="#6-Group-策略：先选组，再选组内元素" class="headerlink" title="6. Group 策略：先选组，再选组内元素"></a>6. Group 策略：先选组，再选组内元素</h2><p>当 <code>E</code> 较大而 <code>k</code> 相对较小时，直接排序所有 logits 的代价较高。<code>KernelGroupSelectionLegacy</code> 和 <code>KernelGroupSelectionPrefetch</code> 将每行切成若干小组，代码以 8 个元素为一组计算组最大值，然后对组最大值排序。</p>
+<p>设最终要选 <code>k</code> 个元素，算法会选取至少 <code>k</code> 个最大组（组数按不小于 <code>k</code> 的 2 的幂向上取整，最少为 4）。其安全性来自一个上界：被排除组的最大值都不大于入选组最大值中的相应高位值；至少已经有 <code>k</code> 个入选组最大值不小于被排除组的任意元素，所以被排除组中的元素不可能进入全局 top-k。随后只从这些入选组取出 logits，再做候选排序和前缀归并。</p>
+<p>这是一种“分层筛选”：第一层用组最大值确定哪些组有希望，第二层在留下的候选元素中精确找 top-k。<code>KernelGroupSelectionPrefetch</code> 是 FP32 的预取实现，使用两块输入缓冲区，在处理当前 tile 时提前搬运下一个 tile。FP16 组策略另有 native-half 实现，避免所有输入都转成 FP32 后再筛选。</p>
+<p>组选择的收益取决于候选规模。调度器用列数、<code>k</code>、每组大小和候选窗口容量估算筛选后工作量；如果减少的排序工作不足以覆盖额外的分组与归并开销，就交给其他策略。</p>
+<h2 id="7-Threshold-策略：用阈值压缩候选，并验证容量"><a href="#7-Threshold-策略：用阈值压缩候选，并验证容量" class="headerlink" title="7. Threshold 策略：用阈值压缩候选，并验证容量"></a>7. Threshold 策略：用阈值压缩候选，并验证容量</h2><p><code>KernelThresholdSelection</code> 的思路是先找一个阈值 <code>τ</code>，把 logits 中满足 <code>x ≥ τ</code> 的值压缩到候选区，再只排序候选值。阈值可以来自分组最大值中的第 <code>k</code> 个边界；对符合条件的 FP32 shape，代码还会先尝试估算阈值，若设备端验证未通过，再改用精确的组排序阈值重试。</p>
+<p>候选区有固定容量 <code>capacity</code>，以 32 为起点，按 4 倍递增，直到容量至少为 <code>2k</code>。不能只假设阈值筛出的值一定装得下，所以候选过滤后会检查两类条件：</p>
+<ul>
+<li><strong>容量是否溢出</strong>：候选数不能超过预留容量。</li>
+<li><strong>候选是否足够</strong>：候选区第 <code>k</code> 个值不能是空位哨兵，也就是必须至少找到 <code>k</code> 个值。</li>
+</ul>
+<p>实现还通过额外 sentinel&#x2F;marker 位置检测压缩越界，而不是让候选写入静默覆盖其他 UB 区域。只有容量和第 <code>k</code> 个候选检查均通过，才对压缩结果排序。如果阈值估计产生候选过多或过少，会尝试精确阈值；精确阈值仍不适用时，设备端对原始整行执行完整排序。因此阈值只是省时的筛选器，完整排序是所有输入上的正确性兜底。</p>
+<p>FP16 阈值策略针对数据布局还有条带化分支：把输入拆成若干条带，先算各条带最大值，再构造阈值候选。具体用条带还是普通分块由 shape 和 <code>k</code> 决定，过滤后的候选容量验证仍然在设备上执行。</p>
+<h2 id="8-FP16-专项：成对筛选与均值过滤"><a href="#8-FP16-专项：成对筛选与均值过滤" class="headerlink" title="8. FP16 专项：成对筛选与均值过滤"></a>8. FP16 专项：成对筛选与均值过滤</h2><p>FP16 通用路径里有一类专门优化 <code>KernelHalfMeanSelection</code>。它把相邻两个 logits 组成一对，对每对计算最大值和最小值。先按 pair maximum 排序，保留足够多的高分 pair；若一个 pair 的最大值进入候选范围，它的另一个成员也有机会进入 top-k，因此再恢复对应 partner，把最大值与 partner 合并排序，最后取出需要的 <code>k</code> 个 logits。</p>
+<p>这一步的直觉是：pair maximum 为低分的 pair，其两个成员都不可能胜过 pair maximum；把这种 pair 排除后，仍可精确保留 top-k。代码会根据列数、<code>k</code> 和 <code>Sort32</code> run 数做成本门槛判断，只有节省的排序量足够大时才进入这条路径。</p>
+<p>在成对排序前还有可选的 <code>TryMeanFilter</code>。它根据行均值和峰值提出一个候选阈值，尝试把可能的高分元素压缩到有界候选区。此过滤不是无条件成立的近似：压缩后会验证容量和第 <code>k</code> 个幸存值；只有证明候选完整时才采用，否则执行完整 pair 选择。若过滤同时证明用于评分的候选非负，评分可走 <code>PositiveSqrtSoftplus</code>；否则回到 <code>StableSqrtSoftplus</code>。</p>
+<p>对很小的 FP16 <code>k</code>，代码还实现 <code>KernelSmallHalfPairs</code>；对 129 到 256 列、每核可批处理少量行的情况，实现 <code>KernelSmallHalfBatch</code> 或 <code>KernelNativeHalfGroupBatch</code>，以批量处理摊薄启动和元数据开销，并控制 32 字节 DMA 对齐。</p>
+<p>这些路径增加了不少边界代码：原始列数可能不是 32 的倍数，half 元素与 FP32 元素的对齐单位不同，索引表也要正确换算字节偏移。因此代码在搬运时把无效尾部填成 <code>-inf</code>，并按实际分配空间核算 padding、partner 和候选区容量。</p>
+<h2 id="9-UB、分块和搬运"><a href="#9-UB、分块和搬运" class="headerlink" title="9. UB、分块和搬运"></a>9. UB、分块和搬运</h2><p>Ascend C 设备端主要在 Unified Buffer（UB）中处理 tile。文件定义 UB 预算为 192 KiB，并预留 4 KiB，避免把全部空间都分给输入和中间记录。每个策略根据输入 tile、排序记录、候选、索引表、临时 FP32 分数和输出缓冲区的字节数反推每次处理多少行。</p>
+<p>分块大小还要同时满足硬件指令约束，例如 <code>Sort32</code> 的重复次数上限（代码按 255 次限制）、向量指令的重复数限制、DMA 32 字节对齐和 <code>MrgSort</code> 最多四路输入等。因而 <code>tileRows</code> 不是简单的固定常量，而是由 <code>E/k/dtype</code> 和当前算法需要的临时空间共同决定。</p>
+<p>输入行数和列数不总是对齐。代码用 <code>DataCopyPad</code> 完成尾部对齐，并用 <code>-inf</code> 填充排序输入；输出则只写实际的 <code>k</code> 个值。FP32 分组路径在部分 shape 下启用双缓冲预取；其它路径也会按缓冲区生命周期复用 UB，选出 logits 后即可回收排序记录空间，供 FP32 评分和结果转换使用。</p>
+<h2 id="10-正确性边界与实现取舍"><a href="#10-正确性边界与实现取舍" class="headerlink" title="10. 正确性边界与实现取舍"></a>10. 正确性边界与实现取舍</h2><p>代码里的快速路径可以归纳为两种安全证明：</p>
+<ol>
+<li><strong>按上界剪枝</strong>：被丢弃的组或 pair 有明确的最大值上界，并且已有至少 <code>k</code> 个候选不小于该上界。</li>
+<li><strong>按阈值压缩</strong>：设备端检查候选容量没有溢出，且第 <code>k</code> 个候选确实存在；否则回退到完整排序。</li>
+</ol>
+<p>这两类证明让调度器可以激进地尝试减少排序规模，同时不依赖输入分布一定“友好”。特殊 shape 的快速前缀也有逐行截止值检查，只有安全行采用前缀结果。</p>
+<p>其它关键边界包括：</p>
+<ul>
+<li><code>k=1</code> 和 <code>k</code> 不是 8、16、32 等对齐数的情况，索引表与输出搬运仍按真实 <code>k</code> 处理。</li>
+<li><code>E</code> 不是 2 的幂或 32 字节对齐时，尾部填充必须和实际列数区分。</li>
+<li>FP16 排序保留 native half，而评分统一转 FP32，避免中间算术精度不足。</li>
+<li>仅输出分数，所以不需要把排序过程中产生的标签恢复成专家 ID。</li>
+<li>每次 <code>run_kernel</code> 只启动一个相应设备入口；动态候选失败后的完整排序在同一个设备 kernel 内完成，避免 Host 读取中间结果再发第二次 kernel。</li>
+</ul>
+<h2 id="11-本地编译运行"><a href="#11-本地编译运行" class="headerlink" title="11. 本地编译运行"></a>11. 本地编译运行</h2><p>仓库提供了运行入口。配置好 CANN 环境后：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">source</span> /usr/local/Ascend/ascend-toolkit/set_env.sh</span><br><span class="line">bash run.sh</span><br></pre></td></tr></table></figure>
+
+<p>若 Toolkit 安装路径不同，替换成对应的 <code>set_env.sh</code>。<code>run.sh</code> 会重新创建 <code>build/</code>。评测约束和输入范围见仓库中的 <a target="_blank" rel="noopener" href="https://github.com/xuanwang0/cann-sqrt-softplus-topk/blob/d309b05f97d1b68bebbfc587e6395f43d4ac1992/SqrtSoftplusTopK.md"><code>SqrtSoftplusTopK.md</code></a>。</p>
+<h2 id="总结"><a href="#总结" class="headerlink" title="总结"></a>总结</h2><p><code>kernel.asc</code> 的核心不是只实现一个 top-k，而是围绕同一个数学目标组织多条精确路径：利用评分函数单调性，先在 logits 上筛选；小规模用完整 <code>Sort32 + MrgSort</code>，更大的问题尝试组上界或阈值压缩，FP16 再用成对与批量路径降低排序成本。Host 端依据元数据和 UB&#x2F;指令预算分发，设备端负责所有数据相关的候选验证，并保留完整排序回退。</p>
+<p>整个实现的重点可以概括成两句话：<strong>用问题的单调结构减少必须计算和排序的数据量；每一种剪枝都要有可验证的上界或容量检查。</strong></p>
+</article><div class="post-copyright"><div class="post-copyright__author"><span class="post-copyright-meta"><i class="fas fa-circle-user fa-fw"></i>文章作者: </span><span class="post-copyright-info"><a href="https://xuanwang0.github.io">宣王</a></span></div><div class="post-copyright__type"><span class="post-copyright-meta"><i class="fas fa-square-arrow-up-right fa-fw"></i>文章链接: </span><span class="post-copyright-info"><a href="https://xuanwang0.github.io/2026/10/19/2026-CANN%E6%8C%91%E6%88%98%E8%B5%9B-SqrtSoftplusTopK-kernel%E8%A7%A3%E6%9E%90/">https://xuanwang0.github.io/2026/10/19/2026-CANN%E6%8C%91%E6%88%98%E8%B5%9B-SqrtSoftplusTopK-kernel%E8%A7%A3%E6%9E%90/</a></span></div><div class="post-copyright__notice"><span class="post-copyright-meta"><i class="fas fa-circle-exclamation fa-fw"></i>版权声明: </span><span class="post-copyright-info">本博客所有文章除特别声明外，均采用 <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank">CC BY-NC-SA 4.0</a> 许可协议。转载请注明来源 <a href="https://xuanwang0.github.io" target="_blank">宣王</a>！</span></div></div><div class="tag_share"><div class="post-meta__tag-list"><a class="post-meta__tags" href="/tags/CANN/">CANN</a><a class="post-meta__tags" href="/tags/Ascend-C/">Ascend C</a><a class="post-meta__tags" href="/tags/%E6%98%87%E8%85%BE/">昇腾</a><a class="post-meta__tags" href="/tags/%E7%AE%97%E5%AD%90%E5%BC%80%E5%8F%91/">算子开发</a><a class="post-meta__tags" href="/tags/TopK/">TopK</a></div></div><nav class="pagination-post" id="pagination"><a class="pagination-related full-width" href="/2026/10/19/NanoPC-T6-LTS-eMMC-%E5%88%9B%E5%BB%BA-oem-%E5%88%86%E5%8C%BA/" title="NanoPC-T6-LTS 在 eMMC 上创建 OEM 分区并自动挂载"><img class="cover" src="/img/NanoPC-T6-LTS-oem-cover.png" onerror="onerror=null;src='/img/404.jpg'" alt="cover of next post"><div class="info text-right"><div class="info-1"><div class="info-item-1">下一篇</div><div class="info-item-2">NanoPC-T6-LTS 在 eMMC 上创建 OEM 分区并自动挂载</div></div><div class="info-2"><div class="info-item-1">记录如何从 SD 卡启动临时 Linux，离线调整 eMMC 上的 userdata 分区，在磁盘末尾创建 ext4 OEM 分区，并配置 /oem 开机自动挂载。</div></div></div></a></nav></div><div class="aside-content" id="aside-content"><div class="card-widget card-info text-center"><div class="avatar-img"><img src="/img/%E5%9D%A4%E5%9D%A4.webp" onerror="this.onerror=null;this.src='/img/friend_404.gif'" alt="avatar"/></div><div class="author-info-name">宣王</div><div class="author-info-description">摆烂中ing....</div><div class="site-data"><a href="/archives/"><div class="headline">文章</div><div class="length-num">3</div></a><a href="/tags/"><div class="headline">标签</div><div class="length-num">15</div></a><a href="/categories/"><div class="headline">分类</div><div class="length-num">3</div></a></div><a id="card-info-btn" target="_blank" rel="noopener" href="https://github.com/xuanwang0"><i class="fab fa-github"></i><span>Follow Me</span></a><div class="card-info-social-icons"><a class="social-icon" href="https://github.com/xuanwang0" target="_blank" title="Github"><i class="fab fa-github" style="color: #24292e;"></i></a></div></div><div class="card-widget card-announcement"><div class="item-headline"><i class="fas fa-bullhorn fa-shake"></i><span>公告</span></div><div class="announcement_content">欢迎来到我的博客，记录学习与成长的点滴。</div></div><div class="sticky_layout"><div class="card-widget" id="card-toc"><div class="item-headline"><i class="fas fa-stream"></i><span>目录</span><span class="toc-percentage"></span></div><div class="toc-content"><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#2026-CANN-%E6%8C%91%E6%88%98%E8%B5%9B%E8%A5%BF%E5%8C%97%E8%B5%9B%E5%8C%BA%E5%88%9D%E8%B5%9B%EF%BC%9ASqrtSoftplusTopK-%E7%9A%84-kernel-asc-%E5%AE%9E%E7%8E%B0%E8%A7%A3%E6%9E%90"><span class="toc-number">1.</span> <span class="toc-text">2026 CANN 挑战赛西北赛区初赛：SqrtSoftplusTopK 的 kernel.asc 实现解析</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#1-%E8%B5%9B%E9%A2%98%E8%A6%81%E6%B1%82%E4%B8%8E%E5%85%B3%E9%94%AE%E8%A7%82%E5%AF%9F"><span class="toc-number">1.1.</span> <span class="toc-text">1. 赛题要求与关键观察</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#2-kernel-asc-%E7%9A%84%E6%95%B4%E4%BD%93%E7%BB%93%E6%9E%84"><span class="toc-number">1.2.</span> <span class="toc-text">2. kernel.asc 的整体结构</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#3-Host-%E5%85%A5%E5%8F%A3%EF%BC%9A%E5%85%83%E6%95%B0%E6%8D%AE%E6%A3%80%E6%9F%A5%E5%92%8C%E7%AD%96%E7%95%A5%E5%88%86%E5%8F%91"><span class="toc-number">1.3.</span> <span class="toc-text">3. Host 入口：元数据检查和策略分发</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#4-%E6%95%B0%E5%80%BC%E8%AE%A1%E7%AE%97%EF%BC%9A%E7%A8%B3%E5%AE%9A%E8%AE%A1%E7%AE%97-sqrt-softplus-x"><span class="toc-number">1.4.</span> <span class="toc-text">4. 数值计算：稳定计算 sqrt(softplus(x))</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#5-%E5%AE%8C%E6%95%B4%E6%8E%92%E5%BA%8F%E8%B7%AF%E5%BE%84%EF%BC%9ASort32-%E5%9B%9B%E8%B7%AF%E5%BD%92%E5%B9%B6"><span class="toc-number">1.5.</span> <span class="toc-text">5. 完整排序路径：Sort32 + 四路归并</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#6-Group-%E7%AD%96%E7%95%A5%EF%BC%9A%E5%85%88%E9%80%89%E7%BB%84%EF%BC%8C%E5%86%8D%E9%80%89%E7%BB%84%E5%86%85%E5%85%83%E7%B4%A0"><span class="toc-number">1.6.</span> <span class="toc-text">6. Group 策略：先选组，再选组内元素</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#7-Threshold-%E7%AD%96%E7%95%A5%EF%BC%9A%E7%94%A8%E9%98%88%E5%80%BC%E5%8E%8B%E7%BC%A9%E5%80%99%E9%80%89%EF%BC%8C%E5%B9%B6%E9%AA%8C%E8%AF%81%E5%AE%B9%E9%87%8F"><span class="toc-number">1.7.</span> <span class="toc-text">7. Threshold 策略：用阈值压缩候选，并验证容量</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#8-FP16-%E4%B8%93%E9%A1%B9%EF%BC%9A%E6%88%90%E5%AF%B9%E7%AD%9B%E9%80%89%E4%B8%8E%E5%9D%87%E5%80%BC%E8%BF%87%E6%BB%A4"><span class="toc-number">1.8.</span> <span class="toc-text">8. FP16 专项：成对筛选与均值过滤</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#9-UB%E3%80%81%E5%88%86%E5%9D%97%E5%92%8C%E6%90%AC%E8%BF%90"><span class="toc-number">1.9.</span> <span class="toc-text">9. UB、分块和搬运</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#10-%E6%AD%A3%E7%A1%AE%E6%80%A7%E8%BE%B9%E7%95%8C%E4%B8%8E%E5%AE%9E%E7%8E%B0%E5%8F%96%E8%88%8D"><span class="toc-number">1.10.</span> <span class="toc-text">10. 正确性边界与实现取舍</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#11-%E6%9C%AC%E5%9C%B0%E7%BC%96%E8%AF%91%E8%BF%90%E8%A1%8C"><span class="toc-number">1.11.</span> <span class="toc-text">11. 本地编译运行</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E6%80%BB%E7%BB%93"><span class="toc-number">1.12.</span> <span class="toc-text">总结</span></a></li></ol></li></ol></div></div><div class="card-widget card-recent-post"><div class="item-headline"><i class="fas fa-history"></i><span>最新文章</span></div><div class="aside-list"><div class="aside-list-item no-cover"><div class="content"><a class="title" href="/2026/10/19/2026-CANN%E6%8C%91%E6%88%98%E8%B5%9B-SqrtSoftplusTopK-kernel%E8%A7%A3%E6%9E%90/" title="2026 CANN 挑战赛西北赛区初赛：SqrtSoftplusTopK 的 kernel.asc 实现解析">2026 CANN 挑战赛西北赛区初赛：SqrtSoftplusTopK 的 kernel.asc 实现解析</a><time datetime="2026-10-19T14:20:00.000Z" title="发表于 2026-10-19 22:20:00">2026-10-19</time></div></div><div class="aside-list-item"><a class="thumbnail" href="/2026/10/19/NanoPC-T6-LTS-eMMC-%E5%88%9B%E5%BB%BA-oem-%E5%88%86%E5%8C%BA/" title="NanoPC-T6-LTS 在 eMMC 上创建 OEM 分区并自动挂载"><img src="/img/NanoPC-T6-LTS-oem-cover.png" onerror="this.onerror=null;this.src='/img/404.jpg'" alt="NanoPC-T6-LTS 在 eMMC 上创建 OEM 分区并自动挂载"/></a><div class="content"><a class="title" href="/2026/10/19/NanoPC-T6-LTS-eMMC-%E5%88%9B%E5%BB%BA-oem-%E5%88%86%E5%8C%BA/" title="NanoPC-T6-LTS 在 eMMC 上创建 OEM 分区并自动挂载">NanoPC-T6-LTS 在 eMMC 上创建 OEM 分区并自动挂载</a><time datetime="2026-10-19T13:00:00.000Z" title="发表于 2026-10-19 21:00:00">2026-10-19</time></div></div><div class="aside-list-item"><a class="thumbnail" href="/2026/07/16/Ascend-Tookit-%E7%8E%AF%E5%A2%83%E6%90%AD%E5%BB%BA/" title="Ascend-Tookit 环境搭建"><img src="/img/title-picture/Ascend.png" onerror="this.onerror=null;this.src='/img/404.jpg'" alt="Ascend-Tookit 环境搭建"/></a><div class="content"><a class="title" href="/2026/07/16/Ascend-Tookit-%E7%8E%AF%E5%A2%83%E6%90%AD%E5%BB%BA/" title="Ascend-Tookit 环境搭建">Ascend-Tookit 环境搭建</a><time datetime="2026-07-16T11:44:12.000Z" title="发表于 2026-07-16 19:44:12">2026-07-16</time></div></div></div></div></div></div></main><footer id="footer"><div class="footer-other"><div class="footer-copyright"><span class="copyright">&copy;&nbsp;2025 - 2026 By 宣王</span><span class="framework-info"><span>框架 </span><a target="_blank" rel="noopener" href="https://hexo.io">Hexo 8.1.2</a><span class="footer-separator">|</span><span>主题 </span><a target="_blank" rel="noopener" href="https://github.com/jerryc127/hexo-theme-butterfly">Butterfly 5.6.0</a></span></div></div></footer></div><div id="rightside"><div id="rightside-config-hide"><button id="readmode" type="button" title="阅读模式"><i class="fas fa-book-open"></i></button><button id="darkmode" type="button" title="日间和夜间模式切换"><i class="fas fa-adjust"></i></button><button id="hide-aside-btn" type="button" title="单栏和双栏切换"><i class="fas fa-arrows-alt-h"></i></button></div><div id="rightside-config-show"><button id="rightside-config" type="button" title="设置"><i class="fas fa-cog fa-spin"></i></button><button class="close" id="mobile-toc-button" type="button" title="目录"><i class="fas fa-list-ul"></i></button><button id="go-up" type="button" title="回到顶部"><span class="scroll-percent"></span><i class="fas fa-arrow-up"></i></button></div></div><div><script src="/js/utils.js?v=5.6.0"></script><script src="/js/main.js?v=5.6.0"></script><div class="js-pjax"></div></div></body></html>
